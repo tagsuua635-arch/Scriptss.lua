@@ -1,0 +1,501 @@
+-- Follow Player + Random + Aimlock GUI
+-- Jenis: LocalScript (client)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+
+local LP = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- ========= STATE =========
+local connections = {}
+local selectedName = nil      -- pilihan sementara di list
+local confirmedTarget = nil   -- player yang sudah di-"Select Player"
+local followOn = false
+local randomOn = false
+local aimOn = false
+local currentTarget = nil     -- target yang sedang diikuti
+local deathConn = nil
+local setFollowUI, setRandomUI, setAimUI -- updater tombol toggle
+
+local function track(c) table.insert(connections, c) return c end
+
+local function isAlive(plr)
+	local ch = plr and plr.Character
+	local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+	local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+	return hum and hrp and hum.Health > 0 and hum:GetState() ~= Enum.HumanoidStateType.Dead
+end
+
+-- ========= GUI =========
+local gui = Instance.new("ScreenGui")
+gui.Name = "FollowAimlockGUI"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 999
+local ok = pcall(function() gui.Parent = game:GetService("CoreGui") end)
+if not ok or not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui") end
+
+local DEFAULT_SIZE = UDim2.new(0, 260, 0, 380)
+local main = Instance.new("Frame")
+main.Size = DEFAULT_SIZE
+main.Position = UDim2.new(0.5, -130, 0.3, 0)
+main.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+main.BorderSizePixel = 0
+main.ClipsDescendants = true
+main.Parent = gui
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("Frame")
+title.Size = UDim2.new(1, 0, 0, 30)
+title.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
+title.BorderSizePixel = 0
+title.Parent = main
+
+local titleLbl = Instance.new("TextLabel")
+titleLbl.Size = UDim2.new(1, -70, 1, 0)
+titleLbl.Position = UDim2.new(0, 10, 0, 0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.Text = "Follow & Aimlock"
+titleLbl.TextColor3 = Color3.new(1, 1, 1)
+titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextSize = 14
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.Parent = title
+
+local function smallBtn(text, color, xOff)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0, 24, 0, 22)
+	b.Position = UDim2.new(1, xOff, 0, 4)
+	b.BackgroundColor3 = color
+	b.Text = text
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 14
+	b.BorderSizePixel = 0
+	b.Parent = title
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+	return b
+end
+local minBtn = smallBtn("-", Color3.fromRGB(90, 90, 110), -58)
+local closeBtn = smallBtn("X", Color3.fromRGB(220, 40, 40), -30)
+
+local content = Instance.new("ScrollingFrame")
+content.Size = UDim2.new(1, -10, 1, -40)
+content.Position = UDim2.new(0, 5, 0, 35)
+content.BackgroundTransparency = 1
+content.BorderSizePixel = 0
+content.ScrollBarThickness = 4
+content.AutomaticCanvasSize = Enum.AutomaticSize.Y
+content.CanvasSize = UDim2.new(0, 0, 0, 0)
+content.Parent = main
+local layout = Instance.new("UIListLayout", content)
+layout.Padding = UDim.new(0, 5)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local order = 0
+local function nextOrder() order += 1 return order end
+
+local function label(text)
+	local l = Instance.new("TextLabel")
+	l.Size = UDim2.new(1, -6, 0, 18)
+	l.BackgroundTransparency = 1
+	l.Text = text
+	l.TextColor3 = Color3.fromRGB(220, 220, 230)
+	l.Font = Enum.Font.GothamBold
+	l.TextSize = 12
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.LayoutOrder = nextOrder()
+	l.Parent = content
+	return l
+end
+
+local function button(text, color)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, -6, 0, 28)
+	b.BackgroundColor3 = color
+	b.Text = text
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 12
+	b.BorderSizePixel = 0
+	b.LayoutOrder = nextOrder()
+	b.Parent = content
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	return b
+end
+
+local GREEN = Color3.fromRGB(40, 160, 80)
+local RED = Color3.fromRGB(190, 50, 50)
+local BLUE = Color3.fromRGB(50, 110, 200)
+
+local function toggleRow(name, onFn, offFn)
+	label(name)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, -6, 0, 28)
+	b.BackgroundColor3 = RED
+	b.Text = "OFF"
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 12
+	b.BorderSizePixel = 0
+	b.LayoutOrder = nextOrder()
+	b.Parent = content
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	local state = false
+	local function setState(on)
+		state = on
+		b.Text = on and "ON" or "OFF"
+		b.BackgroundColor3 = on and GREEN or RED
+	end
+	b.MouseButton1Click:Connect(function()
+		if state then
+			offFn()
+			setState(false)
+		else
+			if onFn() ~= false then setState(true) end
+		end
+	end)
+	return setState
+end
+
+-- ========= PLAYER LIST =========
+label("Pilih Player (di server)")
+local list = Instance.new("ScrollingFrame")
+list.Size = UDim2.new(1, -6, 0, 100)
+list.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 4
+list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+list.CanvasSize = UDim2.new(0, 0, 0, 0)
+list.LayoutOrder = nextOrder()
+list.Parent = content
+Instance.new("UICorner", list).CornerRadius = UDim.new(0, 6)
+local listLayout = Instance.new("UIListLayout", list)
+listLayout.Padding = UDim.new(0, 2)
+
+local selectBtn = button("SELECT PLAYER", BLUE)
+local targetLbl = label("Target: -")
+targetLbl.TextColor3 = Color3.fromRGB(120, 220, 140)
+local statusLbl = label("Status: idle")
+statusLbl.TextColor3 = Color3.fromRGB(180, 180, 200)
+
+local function refreshList()
+	for _, c in ipairs(list:GetChildren()) do
+		if c:IsA("TextButton") then c:Destroy() end
+	end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LP then
+			local b = Instance.new("TextButton")
+			b.Size = UDim2.new(1, -6, 0, 24)
+			b.BackgroundColor3 = (p.Name == selectedName) and Color3.fromRGB(60, 90, 160) or Color3.fromRGB(45, 45, 58)
+			b.Text = p.DisplayName .. " (@" .. p.Name .. ")"
+			b.TextColor3 = Color3.new(1, 1, 1)
+			b.Font = Enum.Font.Gotham
+			b.TextSize = 11
+			b.BorderSizePixel = 0
+			b.Parent = list
+			Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
+			b.MouseButton1Click:Connect(function()
+				selectedName = p.Name
+				refreshList()
+			end)
+		end
+	end
+end
+refreshList()
+track(Players.PlayerAdded:Connect(refreshList))
+track(Players.PlayerRemoving:Connect(function(p)
+	if p.Name == selectedName then selectedName = nil end
+	task.defer(refreshList)
+end))
+
+-- ========= FOLLOW LOGIC =========
+local function clearDeathConn()
+	if deathConn then deathConn:Disconnect() deathConn = nil end
+end
+
+local pickNearest -- forward
+
+local function stopFollow(msg)
+	followOn = false
+	randomOn = false
+	currentTarget = nil
+	clearDeathConn()
+	if setFollowUI then setFollowUI(false) end
+	if setRandomUI then setRandomUI(false) end
+	statusLbl.Text = "Status: " .. (msg or "follow mati/berhenti")
+end
+
+local watchedChar = nil
+local handlingDeath = false
+
+local function onTargetDead()
+	if handlingDeath then return end
+	handlingDeath = true
+	if randomOn then
+		task.delay(0.3, function()
+			handlingDeath = false
+			pickNearest()         -- pindah ke player terdekat berikutnya
+		end)
+	else
+		handlingDeath = false
+		stopFollow("target mati, follow berhenti")
+	end
+end
+
+local function watchTarget(plr)
+	clearDeathConn()
+	watchedChar = plr.Character
+	local hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+	deathConn = hum.Died:Connect(onTargetDead)
+end
+
+pickNearest = function()
+	local best, bestDist
+	if isAlive(LP) then
+		local myPos = LP.Character.HumanoidRootPart.Position
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LP and isAlive(p) then
+				local d = (p.Character.HumanoidRootPart.Position - myPos).Magnitude
+				if not bestDist or d < bestDist then best, bestDist = p, d end
+			end
+		end
+	end
+	if not best then
+		currentTarget = nil
+		statusLbl.Text = "Status: tidak ada player hidup"
+		return
+	end
+	currentTarget = best
+	targetLbl.Text = "Target (terdekat): " .. best.Name
+	statusLbl.Text = "Status: mengikuti terdekat"
+	watchTarget(best)
+end
+
+selectBtn.MouseButton1Click:Connect(function()
+	if not selectedName then
+		statusLbl.Text = "Status: pilih player dulu"
+		return
+	end
+	local p = Players:FindFirstChild(selectedName)
+	if not p then
+		statusLbl.Text = "Status: player sudah keluar"
+		return
+	end
+	confirmedTarget = p
+	targetLbl.Text = "Target: " .. p.Name
+	statusLbl.Text = "Status: target dipilih"
+end)
+
+setFollowUI = toggleRow("Follow Player (Select)", function()
+	if not confirmedTarget or not confirmedTarget.Parent then
+		statusLbl.Text = "Status: tekan SELECT PLAYER dulu"
+		return false
+	end
+	if not isAlive(confirmedTarget) then
+		statusLbl.Text = "Status: target sedang mati"
+		return false
+	end
+	randomOn = false
+	if setRandomUI then setRandomUI(false) end
+	followOn = true
+	currentTarget = confirmedTarget
+	targetLbl.Text = "Target: " .. currentTarget.Name
+	statusLbl.Text = "Status: mengikuti " .. currentTarget.Name
+	watchTarget(currentTarget)
+	return true
+end, function()
+	stopFollow("follow nonaktif")
+end)
+
+setRandomUI = toggleRow("Follow Terdekat (Otomatis)", function()
+	followOn = false
+	if setFollowUI then setFollowUI(false) end
+	randomOn = true
+	followOn = true
+	currentTarget = nil
+	pickNearest()
+	return true
+end, function()
+	stopFollow("follow terdekat nonaktif")
+end)
+
+-- Loop ikut gerak (jalan maupun diam)
+track(RunService.Heartbeat:Connect(function()
+	if not (followOn or randomOn) then return end
+	if not currentTarget then
+		if randomOn and isAlive(LP) then pickNearest() end
+		return
+	end
+	-- target mati / respawn (karakter berganti) -> langsung berhenti / pindah
+	if not isAlive(currentTarget) or currentTarget.Character ~= watchedChar then
+		onTargetDead()
+		return
+	end
+	if not isAlive(LP) then return end
+	local tHRP = currentTarget.Character.HumanoidRootPart
+	local myHRP = LP.Character.HumanoidRootPart
+	myHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3)
+	myHRP.AssemblyLinearVelocity = Vector3.zero
+end))
+
+-- Target random respawn / target hilang
+track(Players.PlayerRemoving:Connect(function(p)
+	if p == currentTarget then
+		if randomOn then pickNearest() else stopFollow("target keluar server") end
+	end
+end))
+
+-- ========= AIMLOCK =========
+local function nearestPlayer()
+	if not isAlive(LP) then return nil end
+	local myPos = LP.Character.HumanoidRootPart.Position
+	local best, bestDist
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LP and isAlive(p) then
+			local d = (p.Character.HumanoidRootPart.Position - myPos).Magnitude
+			if not bestDist or d < bestDist then best, bestDist = p, d end
+		end
+	end
+	return best
+end
+
+local function setAim(state)
+	aimOn = state
+	pcall(function() RunService:UnbindFromRenderStep("AimlockFA") end)
+	if state then
+		RunService:BindToRenderStep("AimlockFA", Enum.RenderPriority.Camera.Value + 1, function()
+			local p = nearestPlayer()
+			if not p then return end
+			local head = p.Character:FindFirstChild("Head") or p.Character.HumanoidRootPart
+			Camera = workspace.CurrentCamera
+			Camera.CFrame = CFrame.new(Camera.CFrame.Position, head.Position)
+		end)
+	end
+end
+
+setAimUI = toggleRow("Aimlock (player terdekat)", function() setAim(true) return true end, function() setAim(false) end)
+
+-- ========= DRAG =========
+do
+	local dragging, dragStart, startPos
+	title.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging, dragStart, startPos = true, i.Position, main.Position
+			i.Changed:Connect(function()
+				if i.UserInputState == Enum.UserInputState.End then dragging = false end
+			end)
+		end
+	end)
+	track(UIS.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - dragStart
+			main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end))
+end
+
+-- ========= RESIZE =========
+local grip = Instance.new("TextButton")
+grip.Size = UDim2.new(0, 20, 0, 20)
+grip.Position = UDim2.new(1, -20, 1, -20)
+grip.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
+grip.Text = "◢"
+grip.TextColor3 = Color3.new(1, 1, 1)
+grip.TextSize = 12
+grip.BorderSizePixel = 0
+grip.ZIndex = 5
+grip.Parent = main
+Instance.new("UICorner", grip).CornerRadius = UDim.new(0, 5)
+
+do
+	local resizing, startMouse, startSize
+	grip.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			resizing, startMouse, startSize = true, i.Position, main.AbsoluteSize
+			i.Changed:Connect(function()
+				if i.UserInputState == Enum.UserInputState.End then resizing = false end
+			end)
+		end
+	end)
+	track(UIS.InputChanged:Connect(function(i)
+		if resizing and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - startMouse
+			local w = math.clamp(startSize.X + d.X, 200, 600)
+			local h = math.clamp(startSize.Y + d.Y, 120, 700)
+			main.Size = UDim2.new(0, w, 0, h)
+		end
+	end))
+end
+
+-- ========= BUKA / TUTUP (MINIMIZE) =========
+local minimized = false
+local savedSize = main.Size
+minBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	if minimized then
+		savedSize = main.Size
+		content.Visible = false
+		grip.Visible = false
+		main.Size = UDim2.new(savedSize.X.Scale, savedSize.X.Offset, 0, 30)
+		minBtn.Text = "+"
+	else
+		content.Visible = true
+		grip.Visible = true
+		main.Size = savedSize
+		minBtn.Text = "-"
+	end
+end)
+
+-- ========= HAPUS SCRIPT (X + YES/NO) =========
+local confirm = Instance.new("Frame")
+confirm.Size = UDim2.new(0, 220, 0, 110)
+confirm.Position = UDim2.new(0.5, -110, 0.5, -55)
+confirm.BackgroundColor3 = Color3.fromRGB(40, 40, 52)
+confirm.BorderSizePixel = 0
+confirm.Visible = false
+confirm.ZIndex = 20
+confirm.Parent = gui
+Instance.new("UICorner", confirm).CornerRadius = UDim.new(0, 8)
+
+local cl = Instance.new("TextLabel")
+cl.Size = UDim2.new(1, -20, 0, 50)
+cl.Position = UDim2.new(0, 10, 0, 8)
+cl.BackgroundTransparency = 1
+cl.Text = "Yakin ingin menghapus script ini?"
+cl.TextWrapped = true
+cl.TextColor3 = Color3.new(1, 1, 1)
+cl.Font = Enum.Font.GothamBold
+cl.TextSize = 13
+cl.ZIndex = 21
+cl.Parent = confirm
+
+local function cBtn(text, color, x)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(0.5, -15, 0, 30)
+	b.Position = UDim2.new(x, x == 0 and 10 or 5, 1, -40)
+	b.BackgroundColor3 = color
+	b.Text = text
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 13
+	b.BorderSizePixel = 0
+	b.ZIndex = 21
+	b.Parent = confirm
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	return b
+end
+local yesBtn = cBtn("YES", GREEN, 0)
+local noBtn = cBtn("NO", RED, 0.5)
+
+closeBtn.MouseButton1Click:Connect(function() confirm.Visible = true end)
+noBtn.MouseButton1Click:Connect(function() confirm.Visible = false end)
+yesBtn.MouseButton1Click:Connect(function()
+	followOn, randomOn = false, false
+	setAim(false)
+	clearDeathConn()
+	for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+	gui:Destroy()
+end)
